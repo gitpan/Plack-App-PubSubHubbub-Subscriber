@@ -10,7 +10,7 @@ use Plack::Util::Accessor qw( config on_ping on_verify );
 
 use Plack::App::PubSubHubbub::Subscriber::Config;
 
-our $VERSION = 0.1;
+our $VERSION = 0.2;
 
 =head1 NAME
 
@@ -37,7 +37,7 @@ Plack::App::PubSubHubbub::Subscriber - PubSubHubbub subscriber implementation as
          return 1;
      },
      on_ping => sub {
-         my ($content_type, $content) = @_;
+         my ($content_type, $content, $token) = @_;
          print $content;
      },
  );
@@ -70,14 +70,17 @@ and a client. Originally developed for L<storyfindr.com|http://storyfindr.com>
 Get/Set the L<Plack::App::PubSubHubbub::Subscriber::Config> object.
 This same config object can be use to instanciate the client L<Plack::App::PubSubHubbub::Subscriber::Client>
 
-=head2 $self->on_ping( sub { my ($content_type, $content) = @_ } )
+=head2 $self->on_ping( sub { my ($content_type, $content, $token) = @_ } )
 
-Triggered when a new ping is received, the parameters are the content type, and the raw content, in that order.
+Triggered when a new ping is received, the parameters are the content type, the raw content, and the token in that order.
+Note that the token is available only if the configuration flag C<token_in_path> is set (the default).
+Also note that, in any case, the token is undef if you didn't use a token to (un)subcribe.
 The return value is ignore.
 
 =head2 $self->on_verify( sub { my ($topic, $token, $mode, $lease) = @_ } )
 
 Triggered when a subscribe/unsubscribe request is received, the parameters are the topic, the token, the mode, and the number of seconds of the lease, in that order.
+Note that the token is undef if you didn't use a token to (un)subcribe.
 Given these parameters, this coderef must return 1 for verified, or 0 for rejected.
 
 =head2 $self->callback_path
@@ -94,10 +97,12 @@ sub callback_path {
 sub call {
     my($self, $env) = @_;
     my $req = Plack::Request->new($env);
+    my $token = $self->config->token_in_path ?
+        extract_token($req) : undef;
 
     if ($req->method eq 'POST') {
         if (my $ping_cb = $self->on_ping) {
-            $ping_cb->($req->content_type, $req->content);
+            $ping_cb->($req->content_type, $req->content, $token);
         }
         return success();
     }
@@ -114,7 +119,8 @@ sub call {
                 or return error_bad_request('hub.challenge is missing');
             my $lease = $p->{'hub.lease_seconds'}
                 or return error_bad_request('hub.lease_seconds is missing');
-            my $token = $p->{'hub.verify_token'};
+
+            $token //= $p->{'hub.verify_token'};
 
             if ($self->on_verify->($topic, $token, $mode, $lease)) {
                 return success_challenge($challenge);
@@ -128,6 +134,12 @@ sub call {
         }
     }
     return error_bad_request('unsupported method');
+}
+
+sub extract_token {
+    my ($req) = @_;
+    my ($token) = $req->path =~ /^\/(.+)$/;
+    return $token;
 }
 
 sub success {
